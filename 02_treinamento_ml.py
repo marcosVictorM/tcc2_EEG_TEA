@@ -2,7 +2,7 @@
 import os
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import StratifiedGroupKFold, train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -11,14 +11,12 @@ from sklearn.metrics import classification_report
 import config
 
 def treinar_e_avaliar():
-    print("Iniciando Fase 2: Carregando dados extraídos...")
+    print("Iniciando Fase 1.2: Otimização Avançada com Gradient Boosting...")
     
-    # Valida se a extração já foi feita
     if not os.path.exists(config.X_FEATURES_PATH):
         print("Erro: Arquivos .npy não encontrados. Rode 'python 01_extracao.py' primeiro.")
         return
 
-    # Carregamento ultrarrápido
     X = np.load(config.X_FEATURES_PATH)
     y = np.load(config.Y_LABELS_PATH)
     df_meta = pd.read_csv(config.METADATA_PATH)
@@ -26,7 +24,6 @@ def treinar_e_avaliar():
     participant_ids = df_meta['participante_id'].values
     arquivos_epocas = df_meta['arquivo'].values
 
-    # Identificar quem são os pacientes únicos e seus respectivos labels (para o split stratificado)
     pacientes_unicos = df_meta[['participante_id', 'arquivo']].drop_duplicates()
     labels_unicos = []
     for pid in pacientes_unicos['participante_id']:
@@ -34,9 +31,6 @@ def treinar_e_avaliar():
 
     print(f"Dataset carregado: {X.shape[0]} épocas × {X.shape[1]} features de {len(pacientes_unicos)} participantes.")
 
-    # ==========================================
-    # SPLIT TREINO/TESTE (Isolamento de Pacientes)
-    # ==========================================
     part_train, part_test = train_test_split(
         pacientes_unicos['participante_id'].values, 
         test_size=config.TEST_SIZE, 
@@ -51,38 +45,36 @@ def treinar_e_avaliar():
     X_test, y_test, groups_test = X[mask_test], y[mask_test], participant_ids[mask_test]
     arquivos_teste = arquivos_epocas[mask_test]
 
-    # ==========================================
-    # PIPELINE E TUNING (BUSCA DE HIPERPARÂMETROS)
-    # ==========================================
+    # Pipeline atualizado: Scaler -> PCA -> HistGradientBoosting
     pipe = Pipeline([
         ('scaler', StandardScaler()),
         ('pca', PCA(random_state=config.RANDOM_STATE)), 
-        ('clf', RandomForestClassifier(class_weight='balanced', random_state=config.RANDOM_STATE))
+        ('clf', HistGradientBoostingClassifier(random_state=config.RANDOM_STATE))
     ])
 
+    # Grade de parâmetros focada no Gradient Boosting
     param_dist = {
         'pca__n_components': [0.85, 0.90, 0.95],
-        'clf__n_estimators': [100, 200],
-        'clf__max_depth': [None, 10, 20]
+        'clf__learning_rate': [0.01, 0.05, 0.1],
+        'clf__max_iter': [100, 200, 300], # Número de árvores
+        'clf__max_depth': [3, 5, 7],      # Árvores mais rasas funcionam melhor no boosting
+        'clf__l2_regularization': [0.0, 0.1, 1.0] # Previne overfitting
     }
 
     cv_interno = StratifiedGroupKFold(n_splits=3)
     
-    print("\nIniciando busca de hiperparâmetros (Tuning)...")
+    print("\nIniciando busca de hiperparâmetros (Gradient Boosting)...")
+    # Aumentei o n_iter para testar 10 combinações diferentes e achar a ótima
     search = RandomizedSearchCV(
-        pipe, param_distributions=param_dist, n_iter=5, 
+        pipe, param_distributions=param_dist, n_iter=10, 
         cv=cv_interno, scoring='accuracy', random_state=config.RANDOM_STATE, n_jobs=-1
     )
     
-    # O group_train garante que não há vazamento no CV interno
     search.fit(X_train, y_train, groups=groups_train)
     melhor_modelo = search.best_estimator_
 
     print(f"Melhores parâmetros encontrados: {search.best_params_}")
 
-    # ==========================================
-    # AVALIAÇÃO FINAL (VOTO MAJORITÁRIO)
-    # ==========================================
     print("\n=== Relatório Final no Conjunto de Teste ===")
     y_pred = melhor_modelo.predict(X_test)
     print(classification_report(y_test, y_pred, target_names=['Neurotípico', 'TEA']))

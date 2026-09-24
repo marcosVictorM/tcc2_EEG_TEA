@@ -18,30 +18,50 @@ def preprocess_raw(filepath):
     raw.pick(raw.ch_names[:config.N_CANAIS])
     return raw
 
-def extract_connectivity_features(raw):
+def extract_features(raw):
+    """Extrai matrizes de Conectividade (Pearson) e Potência (PSD) por banda"""
     n_channels = len(raw.ch_names)
     band_features = []
     
     for band_name, (fmin, fmax) in config.BANDS.items():
+        # 1. Filtro da Banda Específica
         raw_band = raw.copy().filter(fmin, fmax, fir_design='firwin', verbose=False)
         epochs_band = mne.make_fixed_length_epochs(
             raw_band, duration=config.EPOCH_DURATION, overlap=0.0, preload=True, verbose=False
         )
         data_band = epochs_band.get_data()
         
+        # 2. Cálculo do PSD (Power Spectral Density) usando o método de Welch
+        # O MNE calcula o espectro para cada época e cada canal
+        psds, freqs = mne.time_frequency.psd_array_welch(
+            data_band, sfreq=config.SFREQ_RESAMPLE, fmin=fmin, fmax=fmax, n_fft=256, verbose=False
+        )
+        # Tira a média da potência dentro da banda (resultado: 1 valor por canal por época)
+        psd_mean = np.mean(psds, axis=2) 
+        
+        # 3. Iterar pelas épocas para extrair a Conectividade e concatenar com o PSD
         feats_this_band = []
         for ep_idx in range(data_band.shape[0]):
             epoch = data_band[ep_idx]
+            
+            # Conectividade (Correlação de Pearson)
             corr_matrix = np.corrcoef(epoch)
             upper_idx = np.triu_indices(n_channels, k=1)
-            feats_this_band.append(corr_matrix[upper_idx])
+            conectividade = corr_matrix[upper_idx]
+            
+            # Potência PSD para esta época específica
+            potencia_psd = psd_mean[ep_idx]
+            
+            # Concatenar Conectividade + PSD no mesmo vetor de características
+            epoca_features = np.concatenate([conectividade, potencia_psd])
+            feats_this_band.append(epoca_features)
             
         band_features.append(np.array(feats_this_band))
         
     return np.concatenate(band_features, axis=1)
 
 def executar_extracao():
-    print("Iniciando Fase 1: Pré-processamento e Extração de Features de EEG...")
+    print("Iniciando Fase 1: Extração de Features Avançada (Conectividade + PSD)...")
     
     df_labels = pd.read_csv(config.LABELS_FILE)
     df_labels['label'] = df_labels['setname'].apply(infer_label)
@@ -61,12 +81,12 @@ def executar_extracao():
         try:
             print(f"Processando {fname} ({idx+1}/{len(df_labels)})...", end=" ")
             raw = preprocess_raw(fpath)
-            feats = extract_connectivity_features(raw)
+            # Chama a nossa nova função unificada
+            feats = extract_features(raw) 
             
             X_list.append(feats)
             y_list.append(np.full(len(feats), label))
             
-            # Guardar metadados para garantir o GroupKFold perfeito no treino
             for _ in range(len(feats)):
                 metadata_list.append({'arquivo': fname, 'participante_id': idx})
                 
@@ -75,7 +95,6 @@ def executar_extracao():
         except Exception as e:
             print(f"ERRO: {e}")
 
-    # Empilhar matrizes e salvar no disco
     X = np.vstack(X_list)
     y = np.concatenate(y_list)
     df_meta = pd.DataFrame(metadata_list)
@@ -86,7 +105,7 @@ def executar_extracao():
     
     print(f"\nExtração concluída com sucesso!")
     print(f"Total de épocas extraídas: {X.shape[0]}")
-    print(f"Features por época: {X.shape[1]}")
+    print(f"Features por época: {X.shape[1]} (Pearson + PSD)")
     print(f"Arquivos salvos em: {config.BASE_DIR}")
 
 if __name__ == '__main__':

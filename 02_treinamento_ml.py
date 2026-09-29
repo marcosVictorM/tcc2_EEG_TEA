@@ -1,122 +1,154 @@
 # 02_treinamento_ml.py
 import os
+import warnings
+warnings.filterwarnings('ignore')
+
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, HistGradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import RobustScaler
+from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 import config
 
-def construir_features_relativas_e_limpar_epocas(X, y, participant_ids):
-    """
-    1. Converte PSD absoluto em PSD Relativo (%) + Razões Espectrais (Theta/Beta, Theta/Alpha)
-    2. Aplica Transformada Z de Fisher (arctanh) na Conectividade de Pearson
-    3. Remove épocas com artefactos severos (outliers de energia intra-sujeito)
-    4. Agrega o perfil limpo por sujeito (Mediana e Desvio Padrão Robusto)
-    """
+def extrair_assinatura_limpa(X_bloco):
+    """Extrai Conectividade Z + PSD Relativo + Razões Espectrais de um paradigma para 1 sujeito"""
     n_canais = 19 if config.USAR_SISTEMA_10_20 else 64
-    n_conn = (n_canais * (n_canais - 1)) // 2  # 171 para 19 canais
-    n_cols_banda = n_conn + n_canais           # 190 para 19 canais
+    n_conn = (n_canais * (n_canais - 1)) // 2
+    n_cols_banda = n_conn + n_canais
 
     conn_bandas = []
     psd_bandas = []
 
     for b in range(4):
         offset = b * n_cols_banda
-        conn_b = np.clip(X[:, offset : offset + n_conn], -0.999, 0.999)
-        # Transformada Z de Fisher estabiliza a variância da correlação de Pearson
+        conn_b = np.clip(X_bloco[:, offset : offset + n_conn], -0.999, 0.999)
         conn_bandas.append(np.arctanh(conn_b))
         
-        psd_b = np.maximum(X[:, offset + n_conn : offset + n_cols_banda], 1e-12)
+        psd_b = np.maximum(X_bloco[:, offset + n_conn : offset + n_cols_banda], 1e-12)
         psd_bandas.append(psd_b)
 
-    # Soma da potência nas 4 bandas para cada canal (N_epocas, 19)
     psd_soma_total = psd_bandas[0] + psd_bandas[1] + psd_bandas[2] + psd_bandas[3]
-
-    # Potência Relativa por banda (elimina diferenças de crânio/impedância entre pacientes)
     psd_rel_bandas = [psd_b / psd_soma_total for psd_b in psd_bandas]
 
-    # Biomarcadores clássicos de neurodesenvolvimento (Razões Espectrais em log)
     ratio_theta_beta  = np.log10(psd_bandas[1] / psd_bandas[3])
     ratio_theta_alpha = np.log10(psd_bandas[1] / psd_bandas[2])
     ratio_alpha_beta  = np.log10(psd_bandas[2] / psd_bandas[3])
     ratio_delta_theta = np.log10(psd_bandas[0] / psd_bandas[1])
 
-    # Matriz enriquecida por época
-    X_epocas_enriquecido = np.hstack(
+    epocas_enriq = np.hstack(
         conn_bandas + psd_rel_bandas + [ratio_theta_beta, ratio_theta_alpha, ratio_alpha_beta, ratio_delta_theta]
     )
-    X_epocas_enriquecido = np.nan_to_num(X_epocas_enriquecido, nan=0.0, posinf=0.0, neginf=0.0)
+    epocas_enriq = np.nan_to_num(epocas_enriq, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Agregação por Paciente com rejeição de épocas contaminadas por artefactos
-    pids_unicos = []
-    X_sujeitos = []
-    y_sujeitos = []
+    energia_epocas = np.mean(psd_soma_total, axis=1)
+    q25, q75 = np.percentile(energia_epocas, [25, 75])
+    iqr = q75 - q25
+    mask_limpa = (energia_epocas >= (q25 - 1.5 * iqr)) & (energia_epocas <= (q75 + 1.5 * iqr))
+    epocas_limpas = epocas_enriq[mask_limpa] if np.sum(mask_limpa) >= 10 else epocas_enriq
 
-    for pid in pd.unique(participant_ids):
-        mask = (participant_ids == pid)
-        epocas_pid = X_epocas_enriquecido[mask]
-        energia_epocas = np.mean(psd_soma_total[mask], axis=1)
+    mediana_suj = np.median(epocas_limpas, axis=0)
+    iqr_suj = np.percentile(epocas_limpas, 75, axis=0) - np.percentile(epocas_limpas, 25, axis=0)
+    return np.concatenate([mediana_suj, iqr_suj])
 
-        # Rejeita épocas com picos de movimento/piscadas (acima de Q75 + 1.5*IQR ou abaixo de Q25 - 1.5*IQR)
-        q25, q75 = np.percentile(energia_epocas, [25, 75])
-        iqr = q75 - q25
-        mask_limpa = (energia_epocas >= (q25 - 1.5 * iqr)) & (energia_epocas <= (q75 + 1.5 * iqr))
-        if np.sum(mask_limpa) >= 10:
-            epocas_limpas = epocas_pid[mask_limpa]
-        else:
-            epocas_limpas = epocas_pid
+def construir_matriz_multiparadigma(X, y, df_meta):
+    if 'paradigma' not in df_meta.columns:
+        df_meta['paradigma'] = 'rest'
 
-        # Extrai a assinatura central (mediana) e a variabilidade temporal (IQR) do paciente
-        mediana_suj = np.median(epocas_limpas, axis=0)
-        iqr_suj = np.percentile(epocas_limpas, 75, axis=0) - np.percentile(epocas_limpas, 25, axis=0)
-        
-        X_sujeitos.append(np.concatenate([mediana_suj, iqr_suj]))
-        y_sujeitos.append(int(y[mask][0]))
-        pids_unicos.append(pid)
+    paradigmas_presentes = [p for p in ['rest', 'fast', 'assr'] if p in df_meta['paradigma'].unique()]
+    print(f"Paradigmas detectados na matriz: {paradigmas_presentes}")
 
-    return np.array(X_sujeitos), np.array(y_sujeitos), np.array(pids_unicos)
+    if 'rest' in paradigmas_presentes:
+        pids_base = df_meta[df_meta['paradigma'] == 'rest']['participante_id'].unique()
+    else:
+        pids_base = df_meta['participante_id'].unique()
 
-def avaliar_modelos():
-    print("Iniciando Fase 1.5: Engenharia Espectral Relativa + Benchmark ML Clássico...")
+    n_feats_unit = 1672 if config.USAR_SISTEMA_10_20 else 16896
+    dict_por_paradigma = {p: {} for p in paradigmas_presentes}
+    labels_por_pid = {}
+
+    for p in paradigmas_presentes:
+        mask_p = (df_meta['paradigma'].values == p)
+        X_p = X[mask_p]
+        y_p = y[mask_p]
+        pids_p = df_meta['participante_id'].values[mask_p]
+
+        for pid in pd.unique(pids_p):
+            mask_suj = (pids_p == pid)
+            dict_por_paradigma[p][pid] = extrair_assinatura_limpa(X_p[mask_suj])
+            labels_por_pid[pid] = int(y_p[mask_suj][0])
+
+    X_fused_list = []
+    y_fused_list = []
+
+    for pid in pids_base:
+        blocos_sujeito = []
+        v_rest = dict_por_paradigma.get('rest', {}).get(pid, np.full(n_feats_unit, np.nan))
+
+        for p in paradigmas_presentes:
+            v_p = dict_por_paradigma[p].get(pid, np.full(n_feats_unit, np.nan))
+            blocos_sujeito.append(v_p)
+            # Calcula o vetor de Reatividade Dinâmica (Delta = Tarefa Sensorial - Repouso)
+            if p != 'rest' and 'rest' in paradigmas_presentes:
+                delta_p = v_p - v_rest
+                blocos_sujeito.append(delta_p)
+
+        X_fused_list.append(np.concatenate(blocos_sujeito))
+        y_fused_list.append(labels_por_pid[pid])
+
+    return np.array(X_fused_list), np.array(y_fused_list), pids_base
+
+def avaliar_fusao_multiparadigma():
+    print("Iniciando Fase 1.6: Fusão Multi-Paradigma (Repouso + Estímulo Sensorial + Reatividade)...")
 
     if not os.path.exists(config.X_FEATURES_PATH):
-        print("Erro: Ficheiros .npy não encontrados.")
+        print("Erro: Ficheiros .npy não encontrados. Rode 'python 01_extracao.py' primeiro.")
         return
 
     X = np.load(config.X_FEATURES_PATH)
     y = np.load(config.Y_LABELS_PATH)
     df_meta = pd.read_csv(config.METADATA_PATH)
-    participant_ids = df_meta['participante_id'].values
 
-    X_suj, y_suj, pids = construir_features_relativas_e_limpar_epocas(X, y, participant_ids)
-    print(f"Assinaturas limpas geradas: {X_suj.shape[0]} pacientes × {X_suj.shape[1]} biomarcadores (Conectividade Z + PSD Relativo + Razões).\n")
+    X_suj, y_suj, pids = construir_matriz_multiparadigma(X, y, df_meta)
+    print(f"Matriz Multi-Paradigma construída: {X_suj.shape[0]} pacientes × {X_suj.shape[1]} biomarcadores integrados.\n")
 
     modelos = {
-        "SVM (Kernel RBF Balanceado)": Pipeline([
+        "SVM Multi-Paradigma (RBF k=70)": Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
             ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=60)),
-            ('clf', SVC(C=1.0, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
+            ('selector', SelectKBest(f_classif, k=min(70, X_suj.shape[1]))),
+            ('clf', SVC(C=1.2, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
         ]),
-        "Random Forest (Balanceado)": Pipeline([
+        "SVM Multi-Paradigma (RBF k=100)": Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
             ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=80)),
-            ('clf', RandomForestClassifier(n_estimators=300, max_depth=5, min_samples_leaf=3, class_weight='balanced_subsample', random_state=config.RANDOM_STATE, n_jobs=-1))
+            ('selector', SelectKBest(f_classif, k=min(100, X_suj.shape[1]))),
+            ('clf', SVC(C=1.5, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
         ]),
-        "Extra Trees (Balanceado)": Pipeline([
+        "Extra Trees Multi-Paradigma": Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
             ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=80)),
-            ('clf', ExtraTreesClassifier(n_estimators=300, max_depth=6, min_samples_leaf=3, class_weight='balanced', random_state=config.RANDOM_STATE, n_jobs=-1))
+            ('selector', SelectKBest(f_classif, k=min(90, X_suj.shape[1]))),
+            ('clf', ExtraTreesClassifier(n_estimators=400, max_depth=6, min_samples_leaf=2, class_weight='balanced', random_state=config.RANDOM_STATE, n_jobs=-1))
         ]),
-        "Regressão Logística (Lasso L1)": Pipeline([
-            ('scaler', StandardScaler()),
-            ('selector', SelectKBest(f_classif, k=60)),
-            ('clf', LogisticRegression(penalty='l1', solver='liblinear', C=0.25, class_weight='balanced', random_state=config.RANDOM_STATE))
+        "Ensemble Híbrido (SVM + ExtraTrees + LogReg)": Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', RobustScaler()),
+            ('selector', SelectKBest(f_classif, k=min(80, X_suj.shape[1]))),
+            ('clf', VotingClassifier(
+                estimators=[
+                    ('svm', SVC(C=1.2, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE)),
+                    ('et', ExtraTreesClassifier(n_estimators=300, max_depth=6, class_weight='balanced', random_state=config.RANDOM_STATE)),
+                    ('lr', LogisticRegression(C=0.3, class_weight='balanced', random_state=config.RANDOM_STATE))
+                ],
+                voting='soft',
+                weights=[2, 1, 1]
+            ))
         ])
     }
 
@@ -135,7 +167,6 @@ def avaliar_modelos():
 
             pipe.fit(X_tr, y_tr)
             
-            # Calibra o limiar ótimo no próprio conjunto de treino (Índice de Youden)
             prob_tr = pipe.predict_proba(X_tr)[:, 1]
             limiares = np.linspace(0.30, 0.70, 41)
             melhor_th = 0.50
@@ -162,8 +193,8 @@ def avaliar_modelos():
         sens = tp / (tp + fn)
 
         print(f"-> {nome}:")
-        print(f"   Acurácia Bruta: {acc_bruta:.2%} ({tn+tp}/103) | Balanceada: {acc_bal:.2%}")
-        print(f"   Especificidade (TD): {tn}/40 ({spec:.2%}) | Sensibilidade (ASD): {tp}/63 ({sens:.2%})\n")
+        print(f"   Acurácia Bruta: {acc_bruta:.2%} ({tn+tp}/{len(y_suj)}) | Balanceada: {acc_bal:.2%}")
+        print(f"   Especificidade (TD): {tn}/{tn+fp} ({spec:.2%}) | Sensibilidade (ASD): {tp}/{tp+fn} ({sens:.2%})\n")
 
         if acc_bal > melhor_bal_acc:
             melhor_bal_acc = acc_bal
@@ -172,13 +203,13 @@ def avaliar_modelos():
 
     acc_bruta, acc_bal, tn, fp, fn, tp, spec, sens = melhor_resumo
     print("=======================================================")
-    print(f"MELHOR MODELO CLÁSSICO: {melhor_nome}")
+    print(f"MELHOR MODELO MULTI-PARADIGMA: {melhor_nome}")
     print("=======================================================")
-    print(f"Diagnósticos Corretos:        {tn+tp}/103 ({acc_bruta:.2%})")
+    print(f"Diagnósticos Corretos:        {tn+tp}/{len(y_suj)} ({acc_bruta:.2%})")
     print(f"Acurácia Clínica Balanceada:  {acc_bal:.2%}")
-    print(f"Acerto em Neurotípicos (TD):  {tn}/40 ({spec:.2%})")
-    print(f"Acerto em Autismo      (ASD): {tp}/63 ({sens:.2%})")
+    print(f"Acerto em Neurotípicos (TD):  {tn}/{tn+fp} ({spec:.2%})")
+    print(f"Acerto em Autismo      (ASD): {tp}/{tp+fn} ({sens:.2%})")
     print("=======================================================\n")
 
 if __name__ == '__main__':
-    avaliar_modelos()
+    avaliar_fusao_multiparadigma()

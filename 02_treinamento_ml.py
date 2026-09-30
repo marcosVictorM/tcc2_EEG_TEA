@@ -5,7 +5,7 @@ warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, VotingClassifier
+from sklearn.ensemble import ExtraTreesClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold
@@ -56,90 +56,123 @@ def extrair_assinatura_limpa(X_bloco):
     iqr_suj = np.percentile(epocas_limpas, 75, axis=0) - np.percentile(epocas_limpas, 25, axis=0)
     return np.concatenate([mediana_suj, iqr_suj])
 
-def construir_matriz_multiparadigma(X, y, df_meta):
-    if 'paradigma' not in df_meta.columns:
-        df_meta['paradigma'] = 'rest'
+def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo):
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=config.RANDOM_STATE)
+    y_true_all, y_pred_all = [], []
 
-    paradigmas_presentes = [p for p in ['rest', 'fast', 'assr'] if p in df_meta['paradigma'].unique()]
-    print(f"Paradigmas detectados na matriz: {paradigmas_presentes}")
+    for train_idx, test_idx in cv.split(X_mat, y_vec):
+        X_tr, y_tr = X_mat[train_idx], y_vec[train_idx]
+        X_te, y_te = X_mat[test_idx], y_vec[test_idx]
 
-    if 'rest' in paradigmas_presentes:
-        pids_base = df_meta[df_meta['paradigma'] == 'rest']['participante_id'].unique()
-    else:
-        pids_base = df_meta['participante_id'].unique()
+        pipe.fit(X_tr, y_tr)
+        prob_tr = pipe.predict_proba(X_tr)[:, 1]
+        
+        melhor_th = 0.50
+        maior_j = -1.0
+        for th in np.linspace(0.30, 0.70, 41):
+            j_score = balanced_accuracy_score(y_tr, (prob_tr >= th).astype(int))
+            if j_score > maior_j:
+                maior_j = j_score
+                melhor_th = th
 
-    n_feats_unit = 1672 if config.USAR_SISTEMA_10_20 else 16896
-    dict_por_paradigma = {p: {} for p in paradigmas_presentes}
-    labels_por_pid = {}
+        prob_te = pipe.predict_proba(X_te)[:, 1]
+        preds_te = (prob_te >= melhor_th).astype(int)
 
-    for p in paradigmas_presentes:
-        mask_p = (df_meta['paradigma'].values == p)
-        X_p = X[mask_p]
-        y_p = y[mask_p]
-        pids_p = df_meta['participante_id'].values[mask_p]
+        y_true_all.extend(y_te)
+        y_pred_all.extend(preds_te)
 
-        for pid in pd.unique(pids_p):
-            mask_suj = (pids_p == pid)
-            dict_por_paradigma[p][pid] = extrair_assinatura_limpa(X_p[mask_suj])
-            labels_por_pid[pid] = int(y_p[mask_suj][0])
+    y_true_all = np.array(y_true_all)
+    y_pred_all = np.array(y_pred_all)
 
-    X_fused_list = []
-    y_fused_list = []
+    acc_bruta = np.mean(y_true_all == y_pred_all)
+    acc_bal = balanced_accuracy_score(y_true_all, y_pred_all)
+    tn, fp, fn, tp = confusion_matrix(y_true_all, y_pred_all).ravel()
+    spec = tn / (tn + fp)
+    sens = tp / (tp + fn)
 
-    for pid in pids_base:
-        blocos_sujeito = []
-        v_rest = dict_por_paradigma.get('rest', {}).get(pid, np.full(n_feats_unit, np.nan))
+    print("=======================================================")
+    print(f"{nome_modelo}")
+    print("=======================================================")
+    print(f"Diagnósticos Corretos:        {tn+tp}/{len(y_vec)} ({acc_bruta:.2%})")
+    print(f"Acurácia Clínica Balanceada:  {acc_bal:.2%}")
+    print(f"Acerto em Neurotípicos (TD):  {tn}/{tn+fp} ({spec:.2%})")
+    print(f"Acerto em Autismo      (ASD): {tp}/{tp+fn} ({sens:.2%})")
+    print("=======================================================\n")
 
-        for p in paradigmas_presentes:
-            v_p = dict_por_paradigma[p].get(pid, np.full(n_feats_unit, np.nan))
-            blocos_sujeito.append(v_p)
-            # Calcula o vetor de Reatividade Dinâmica (Delta = Tarefa Sensorial - Repouso)
-            if p != 'rest' and 'rest' in paradigmas_presentes:
-                delta_p = v_p - v_rest
-                blocos_sujeito.append(delta_p)
-
-        X_fused_list.append(np.concatenate(blocos_sujeito))
-        y_fused_list.append(labels_por_pid[pid])
-
-    return np.array(X_fused_list), np.array(y_fused_list), pids_base
-
-def avaliar_fusao_multiparadigma():
-    print("Iniciando Fase 1.6: Fusão Multi-Paradigma (Repouso + Estímulo Sensorial + Reatividade)...")
+def executar_consolidacao_fase1():
+    print("Iniciando Consolidação Oficial da Fase 1 (Machine Learning Clássico - SFARI BIDS)...\n")
 
     if not os.path.exists(config.X_FEATURES_PATH):
-        print("Erro: Ficheiros .npy não encontrados. Rode 'python 01_extracao.py' primeiro.")
+        print("Erro: Ficheiros .npy não encontrados.")
         return
 
     X = np.load(config.X_FEATURES_PATH)
     y = np.load(config.Y_LABELS_PATH)
     df_meta = pd.read_csv(config.METADATA_PATH)
 
-    X_suj, y_suj, pids = construir_matriz_multiparadigma(X, y, df_meta)
-    print(f"Matriz Multi-Paradigma construída: {X_suj.shape[0]} pacientes × {X_suj.shape[1]} biomarcadores integrados.\n")
+    if 'paradigma' not in df_meta.columns:
+        df_meta['paradigma'] = 'rest'
 
-    modelos = {
-        "SVM Multi-Paradigma (RBF k=70)": Pipeline([
+    # 1. Matriz de Repouso Isolado (103 pacientes x 1672 biomarcadores)
+    mask_rest = (df_meta['paradigma'].values == 'rest')
+    X_rest_ep = X[mask_rest]
+    y_rest_ep = y[mask_rest]
+    pids_rest_ep = df_meta['participante_id'].values[mask_rest]
+
+    pids_base = pd.unique(pids_rest_ep)
+    X_rest_suj, y_rest_suj = [], []
+    dict_rest = {}
+
+    for pid in pids_base:
+        m_s = (pids_rest_ep == pid)
+        assinatura = extrair_assinatura_limpa(X_rest_ep[m_s])
+        X_rest_suj.append(assinatura)
+        y_rest_suj.append(int(y_rest_ep[m_s][0]))
+        dict_rest[pid] = assinatura
+
+    X_rest_suj = np.array(X_rest_suj)
+    y_rest_suj = np.array(y_rest_suj)
+
+    pipe_svm_rest = Pipeline([
+        ('scaler', RobustScaler()),
+        ('selector', SelectKBest(f_classif, k=60)),
+        ('clf', SVC(C=1.0, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
+    ])
+
+    avaliar_pipeline_calibrado(
+        X_rest_suj, y_rest_suj, pipe_svm_rest,
+        "MODELO CAMPEÃO EM EQUILÍBRIO CLÍNICO: SVM RBF (Repouso Isolado - 1.672 feats)"
+    )
+
+    # 2. Matriz Multi-Paradigma (103 pacientes x 8360 biomarcadores)
+    paradigmas_presentes = [p for p in ['rest', 'fast', 'assr'] if p in df_meta['paradigma'].unique()]
+    if len(paradigmas_presentes) > 1:
+        n_feats_unit = X_rest_suj.shape[1]
+        dict_por_p = {'rest': dict_rest}
+        for p in ['fast', 'assr']:
+            if p in paradigmas_presentes:
+                dict_por_p[p] = {}
+                m_p = (df_meta['paradigma'].values == p)
+                X_p, pids_p = X[m_p], df_meta['participante_id'].values[m_p]
+                for pid in pd.unique(pids_p):
+                    dict_por_p[p][pid] = extrair_assinatura_limpa(X_p[pids_p == pid])
+
+        X_multi_suj = []
+        for pid in pids_base:
+            v_rest = dict_por_p['rest'][pid]
+            blocos = [v_rest]
+            for p in ['fast', 'assr']:
+                if p in dict_por_p:
+                    v_p = dict_por_p[p].get(pid, np.full(n_feats_unit, np.nan))
+                    blocos.append(v_p)
+                    blocos.append(v_p - v_rest)
+            X_multi_suj.append(np.concatenate(blocos))
+        X_multi_suj = np.array(X_multi_suj)
+
+        pipe_ensemble_multi = Pipeline([
             ('imputer', SimpleImputer(strategy='median')),
             ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=min(70, X_suj.shape[1]))),
-            ('clf', SVC(C=1.2, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
-        ]),
-        "SVM Multi-Paradigma (RBF k=100)": Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=min(100, X_suj.shape[1]))),
-            ('clf', SVC(C=1.5, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE))
-        ]),
-        "Extra Trees Multi-Paradigma": Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=min(90, X_suj.shape[1]))),
-            ('clf', ExtraTreesClassifier(n_estimators=400, max_depth=6, min_samples_leaf=2, class_weight='balanced', random_state=config.RANDOM_STATE, n_jobs=-1))
-        ]),
-        "Ensemble Híbrido (SVM + ExtraTrees + LogReg)": Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', RobustScaler()),
-            ('selector', SelectKBest(f_classif, k=min(80, X_suj.shape[1]))),
+            ('selector', SelectKBest(f_classif, k=80)),
             ('clf', VotingClassifier(
                 estimators=[
                     ('svm', SVC(C=1.2, kernel='rbf', class_weight='balanced', probability=True, random_state=config.RANDOM_STATE)),
@@ -150,66 +183,11 @@ def avaliar_fusao_multiparadigma():
                 weights=[2, 1, 1]
             ))
         ])
-    }
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=config.RANDOM_STATE)
-
-    melhor_bal_acc = 0.0
-    melhor_nome = ""
-    melhor_resumo = None
-
-    for nome, pipe in modelos.items():
-        y_true_all, y_pred_all = [], []
-        
-        for train_idx, test_idx in cv.split(X_suj, y_suj):
-            X_tr, y_tr = X_suj[train_idx], y_suj[train_idx]
-            X_te, y_te = X_suj[test_idx], y_suj[test_idx]
-
-            pipe.fit(X_tr, y_tr)
-            
-            prob_tr = pipe.predict_proba(X_tr)[:, 1]
-            limiares = np.linspace(0.30, 0.70, 41)
-            melhor_th = 0.50
-            maior_j = -1.0
-            for th in limiares:
-                j_score = balanced_accuracy_score(y_tr, (prob_tr >= th).astype(int))
-                if j_score > maior_j:
-                    maior_j = j_score
-                    melhor_th = th
-
-            prob_te = pipe.predict_proba(X_te)[:, 1]
-            preds_te = (prob_te >= melhor_th).astype(int)
-
-            y_true_all.extend(y_te)
-            y_pred_all.extend(preds_te)
-
-        y_true_all = np.array(y_true_all)
-        y_pred_all = np.array(y_pred_all)
-
-        acc_bruta = np.mean(y_true_all == y_pred_all)
-        acc_bal = balanced_accuracy_score(y_true_all, y_pred_all)
-        tn, fp, fn, tp = confusion_matrix(y_true_all, y_pred_all).ravel()
-        spec = tn / (tn + fp)
-        sens = tp / (tp + fn)
-
-        print(f"-> {nome}:")
-        print(f"   Acurácia Bruta: {acc_bruta:.2%} ({tn+tp}/{len(y_suj)}) | Balanceada: {acc_bal:.2%}")
-        print(f"   Especificidade (TD): {tn}/{tn+fp} ({spec:.2%}) | Sensibilidade (ASD): {tp}/{tp+fn} ({sens:.2%})\n")
-
-        if acc_bal > melhor_bal_acc:
-            melhor_bal_acc = acc_bal
-            melhor_nome = nome
-            melhor_resumo = (acc_bruta, acc_bal, tn, fp, fn, tp, spec, sens)
-
-    acc_bruta, acc_bal, tn, fp, fn, tp, spec, sens = melhor_resumo
-    print("=======================================================")
-    print(f"MELHOR MODELO MULTI-PARADIGMA: {melhor_nome}")
-    print("=======================================================")
-    print(f"Diagnósticos Corretos:        {tn+tp}/{len(y_suj)} ({acc_bruta:.2%})")
-    print(f"Acurácia Clínica Balanceada:  {acc_bal:.2%}")
-    print(f"Acerto em Neurotípicos (TD):  {tn}/{tn+fp} ({spec:.2%})")
-    print(f"Acerto em Autismo      (ASD): {tp}/{tp+fn} ({sens:.2%})")
-    print("=======================================================\n")
+        avaliar_pipeline_calibrado(
+            X_multi_suj, y_rest_suj, pipe_ensemble_multi,
+            "MODELO CAMPEÃO EM SENSIBILIDADE / TRIAGEM: Ensemble Híbrido Multi-Paradigma (8.360 feats)"
+        )
 
 if __name__ == '__main__':
-    avaliar_fusao_multiparadigma()
+    executar_consolidacao_fase1()

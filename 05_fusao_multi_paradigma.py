@@ -304,9 +304,6 @@ def executar_estudo_multi_paradigma():
 
         return oof_probs
 
-    oof_dl_rest = data['dl_oof_rest']
-    oof_dl_fast = data['dl_oof_fast']
-
     oof_rest_lr40 = avaliar_ml('rest', 'spec', lambda f: LogisticRegression(C=0.2, class_weight='balanced', max_iter=500, random_state=42+f), k_best=40, por_chunk=False)
     oof_rest_comb_lr60 = avaliar_ml('rest', 'comb', lambda f: LogisticRegression(C=0.2, class_weight='balanced', max_iter=500, random_state=42+f), k_best=60, por_chunk=False)
     oof_rest_comb_svm40 = avaliar_ml('rest', 'comb', lambda f: SVC(C=1.0, kernel='rbf', class_weight='balanced', probability=True, random_state=42+f), k_best=40, por_chunk=False)
@@ -329,7 +326,7 @@ def executar_estudo_multi_paradigma():
         ("REST (Grafo + Tangente SPD)", "SVM RBF Hibrido (k=40)", oof_rest_comb_svm40),
         ("FAST (Espaco Tangente SPD)", "SVM Riemanniano (k=40)", oof_fast_riem_svm40),
         ("FAST (Espaco Tangente SPD)", "MLP Tangente (k=60)", oof_fast_riem_mlp60),
-        ("FAST (Grafo 3D Estimulado)", "BrainNet-CNN 3D (Deep L.)", oof_dl_fast),
+        ("FAST (Grafo + Tangente SPD)", "SVM Hibrido FAST (k=40)", oof_fast_comb_svm40),
         ("ASSR (Auditivo 40Hz + Riem)", "MLP Tangente (k=60)", oof_assr_comb_mlp60),
         ("Delta_ASSR (Reativ. ASSR-REST)", "LogReg L2 Diferencial", oof_dassr_spec_lr100),
         ("Delta_FAST (Reativ. FAST-REST)", "MLP Diferencial (k=60)", oof_dfast_spec_mlp60),

@@ -38,7 +38,7 @@ def extract_features(raw):
     for band_name, (fmin, fmax) in config.BANDS.items():
         raw_band = raw.copy().filter(fmin, fmax, fir_design='firwin', verbose=False)
         epochs_band = mne.make_fixed_length_epochs(
-            raw_band, duration=config.EPOCH_DURATION, overlap=0.0, preload=True, verbose=False
+            raw_band, duration=config.EPOCH_DURATION, overlap=config.EPOCH_OVERLAP, preload=True, verbose=False
         )
         data_band = epochs_band.get_data()
         

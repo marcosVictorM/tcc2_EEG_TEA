@@ -1,3 +1,6 @@
-venv/  dataset/  __pycache__/ 
-*.npy 
-metadata.csv 
+venv/
+dataset/
+__pycache__/
+*.npy
+*.npz
+metadata.csv

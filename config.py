@@ -37,6 +37,7 @@ BANDS = {
     'beta':  (13, 30)
 }
 EPOCH_DURATION = 2.0
+EPOCH_OVERLAP = 1.0  # 50% de sobreposição (1 segundo). Dobra o número de épocas extraídas.
 SFREQ_RESAMPLE = 256
 
 # Seleção de canais para evitar a Maldição da Dimensionalidade

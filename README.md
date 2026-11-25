@@ -1,150 +1,205 @@
-# Diagnóstico Computacional do TEA via Eletroencefalografia (EEG)
+# Classificação de Transtorno do Espectro Autista (TEA) com EEG
 
-**Contexto:** Trabalho de Conclusão de Curso (TCC) — Engenharia da Computação, PUC Minas.
+Pipeline de pesquisa para distinguir indivíduos com TEA (ASD) de neurotípicos (TD) a partir de EEG, combinando **aprendizado de máquina clássico**, **redes neurais (BrainNetCNN híbrida)**, **geometria riemanniana** e **teoria de grafos**, sobre três paradigmas experimentais (repouso, FAST e ASSR). Trabalho desenvolvido como Trabalho de Conclusão de Curso (TCC).
 
----
-
-## 1. Visão Geral
-
-Este repositório contém a implementação metodológica e experimental para a triagem, explicabilidade neurofisiológica e auxílio ao diagnóstico automatizado do **Transtorno do Espectro Autista (TEA / ASD)** em comparação com indivíduos **Neurotípicos (TD)**, a partir de sinais de Eletroencefalografia (EEG) multi-paradigma.
-
-A pesquisa investiga e compara de forma progressiva:
-1. **Machine Learning Clássico com Engenharia de Biomarcadores Relativos** (Potência Espectral Relativa, Razões Logarítmicas de Maturação Cortical, Transformada Z de Fisher e Limpeza Automática de Artefatos via IQR Intra-Sujeito).
-2. **Deep Learning Topológico 3D (`BrainNet-CNN`)** com aumento de dados temporal (*Chunking Augmentation* + *Overlap* de 50%), preservando a geometria espacial dos 19 eletrodos do Sistema Internacional 10-20.
-3. **Geometria Riemanniana no Espaço Tangente ($\text{SPD}$) + Teoria dos Grafos Corticais + Super-Fusão Multi-Paradigma (*Stacking*)**, treinando algoritmos especialistas para cada modalidade de exame sob validação cruzada rigorosa por sujeito (`GroupKFold` de 5 *folds*, livre de *data leakage*).
-4. **Estudo Científico de Ablação e Padrões de Interferência nos 7 Exames Completos (503.256 Épocas em 5 Bandas, incluindo Gama 30–45 Hz):** Remoção sistemática de bandas oscilatórias (*Leave-One-Band-Out*) e regiões corticais (*Leave-One-Region-Out*), identificando onde a banda Gama e canais periféricos fornecem sinal cognitivo real vs. onde introduzem interferência eletromiográfica (EMG), elevando a acurácia global pós-poda para **83,50%** (**82,86% balanceada**).
+> ⚠️ **Aviso:** este é um projeto de pesquisa acadêmica. Os modelos **não** são uma ferramenta de diagnóstico e não devem ser usados para decisões clínicas.
 
 ---
 
-## 2. Base de Dados (SFARI_EEG Multi-Paradigm BIDS — `ds006780`)
+## Sumário
 
-Após uma fase piloto inicial com 56 indivíduos (arquivos `.set`), o projeto migrou para a base clínica pública **SFARI_EEG multi-paradigm dataset (BIDS)**, desenvolvida no *Albert Einstein College of Medicine* e disponibilizada no repositório OpenNeuro:
-* **Referência / DOI:** `doi:10.18112/openneuro.ds006780.v1.0.0` (Licença CC0).
-* **Coorte Clínica Avaliada:** **103 participantes elegíveis** (**63 TEA [ASD]** e **40 Neurotípicos [TD]**, faixa etária de 8 a 14,5 anos).
-* **Todos os 7 Paradigmas Extraídos e Processados (503.256 épocas de 2s com 50% de sobreposição em 5 Bandas: Delta, Theta, Alpha, Beta e Gamma):**
-  * **`rest` (*Resting State* — `.bdf`):** Estado de repouso espontâneo (103 sujeitos | 36.389 épocas).
-  * **`fast` (*FAST Face Processing* — `.bdf`):** Atenção social a faces vs. objetos (102 sujeitos | 88.840 épocas).
-  * **`assr` (*Auditory Steady-State Response* — `.bdf`):** Sincronização auditiva rítmica a 27/40 Hz (96 sujeitos | 46.751 épocas).
-  * **`avsrt` (*Audiovisual Simple Reaction Time* — `.bdf`):** Tempo de reação simples audiovisual (93 sujeitos | 82.105 épocas).
-  * **`beepflash` (*Cross-Sensory Attention* — `.bdf`):** Alternância atencional multissensorial (91 sujeitos | 108.089 épocas).
-  * **`ic` (*Illusory Contours* — `.bdf`):** Integração visual de contornos ilusórios de Kanizsa (99 sujeitos | 82.674 épocas).
-  * **`motor` (*Mobile EEG on Treadmill* — `.vhdr`/`.eeg`):** Processamento sensório-motor em caminhada na esteira (95 sujeitos | 58.408 épocas).
-
----
-
-## 3. Síntese dos Resultados Alcançados (Validação 5-Fold por Sujeito)
-
-Todos os resultados abaixo foram avaliados estritamente no nível do paciente (`Subject-level GroupKFold` de 5 *folds*), garantindo que épocas ou blocos (*chunks*) de um mesmo participante **jamais** se misturem entre treino e teste:
-
-| Fase / Arquitetura Avaliada | Paradigmas Utilizados | Acertos Totais | Acurácia Bruta (%) | Acurácia Balanceada (%) | Especificidade TD (%) | Sensibilidade ASD (%) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Fase 1.4:** HGB em Épocas Brutas (PSD Absoluto) | `REST` | 58 / 103 | 56,31% | 51,96% | 32,50% (13/40) | 71,43% (45/63) |
-| **Fase 1.5:** SVM RBF + Biomarcadores Relativos | `REST` | 69 / 103 | 66,99% | 66,17% | 62,50% (25/40) | 69,84% (44/63) |
-| **Fase 1.6:** Ensemble Híbrido (Fusão Precoce) | `REST + FAST + ASSR` | 70 / 103 | 67,96% | 63,31% | 42,50% (17/40) | 84,13% (53/63) |
-| **Fase 2.5:** Deep Learning `BrainNet-CNN` 3D (Limiar 0.50) | `REST` (6 *chunks*/suj) | 74 / 103 | 71,84% | 69,23% | 57,50% (23/40) | 80,95% (51/63) |
-| **Fase 3.2:** `BrainNet-CNN` 3D + Calibração de Youden | `REST` (6 *chunks*/suj) | 76 / 103 | 73,79% | 74,92% | 80,00% (32/40) | 69,84% (44/63) |
-| **Fase 4 (Campeão Equilíbrio):** Super-Fusão 3 Exames | `REST + Δ_ASSR + Δ_FAST` | 82 / 103 | 79,61% | 80,60% | 85,00% (34/40) | 76,19% (48/63) |
-| **Fase 4 (Campeão Triagem):** Super-Fusão 3 Exames | `REST + FAST + ASSR + Δ_ASSR` | 85 / 103 | 82,52% | 79,78% | 67,50% (27/40) | **92,06% (58/63)** |
-| **Fase 5 (Fusão Cega 7 Exames):** Sem Poda de Ruído | Todos os 7 Exames | 81 / 103 | 78,64% | 79,35% | 82,50% (33/40) | 76,19% (48/63) |
-| **Fase 5 (Recorde Geral Pós-Ablação):** Poda de Interferências | **`REST + FAST + AVSRT + Motor`** | **86 / 103** | **83,50%** | **82,86%** | **80,00% (32/40)** | **85,71% (54/63)** |
+- [Dados](#dados)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Visão geral do pipeline](#visão-geral-do-pipeline)
+- [Instalação](#instalação)
+- [Como executar](#como-executar)
+- [Configuração](#configuração)
+- [Metodologia](#metodologia)
+- [Resultados](#resultados)
+- [Limitações conhecidas](#limitações-conhecidas)
+- [Reprodutibilidade](#reprodutibilidade)
+- [Licença e citação](#licença-e-citação)
 
 ---
 
-## 4. Estrutura do Repositório
+## Dados
 
-```text
-TCC_EEG/
-│
-├── config.py                                      # Configurações globais (7 paradigmas, 5 bandas c/ Gama e regiões corticais)
-├── 01_extracao.py                                 # Extração inicial BIDS (.bdf) dos 3 primeiros paradigmas em 4 bandas
-├── 02_treinamento_ml.py                           # Fase 1: Machine Learning Clássico (SVM RBF e Ensemble Precoce)
-├── 03_treinamento_dl.py                           # Fase 2 e 3: Deep Learning Topológico 3D (BrainNet-CNN + Youden)
-├── 04_graficos.py                                 # Geração das Matrizes de Confusão em alta resolução (.png)
-├── 05_fusao_multi_paradigma.py                    # Fase 4: Especialistas por Paradigma e Super-Fusão (3 exames)
-├── 06_extracao_7_paradigmas_5_bandas.py           # Fase 5: Extração paralela dos 7 exames (.bdf e .vhdr) nas 5 bandas
-├── 07_estudo_diferencial_ablacao.py               # Fase 5: Ablação de bandas/lobos, análise de interferência e Fusão (83,50%)
-├── 08_validacao_auditoria_blindada.py             # Fase 6: Validação auditada sem canais oculares (15ch Riemann) em 10 sorteios
-├── Documentacao_Processo.md                       # Relatório científico completo de todas as fases, tabelas e descobertas
-├── Plano_TCC.md                                   # Planejamento metodológico inicial do projeto
-├── ablacao_bandas_7_exames.png                    # Mapa de calor: relevância vs. interferência das 5 bandas nos 7 exames
-├── ablacao_regioes_7_exames.png                   # Mapa de calor: relevância vs. interferência dos 5 lobos nos 7 exames
-├── comparativo_7_paradigmas_gama.png              # Comparativo dos 7 exames (4 vs. 5 bandas + taxa de ruído IQR)
-├── matriz_confusao_fase5_super_fusao_83_5.png     # Matriz de Confusão do Recorde Geral (83,50% Bruta | 82,86% Balanceada)
-├── .gitignore                                     # Exclusão de ambientes virtuais (venv) e matrizes pesadas (.npy/.npz)
-└── README.md                                      # Guia do projeto e instruções de reprodução
+O projeto usa o dataset público **SFARI EEG (OpenNeuro `ds006780`)**, em formato BIDS (arquivos `.bdf`, BioSemi). São usados apenas os participantes dos grupos `ASD` e `TD`, nos paradigmas:
+
+| Paradigma | Descrição | Coluna em `participants.tsv` |
+|---|---|---|
+| `rest` | EEG em repouso | `completed_Resting_state` |
+| `fast` | Paradigma FAST | `completed_FAST` |
+| `assr` | Resposta auditiva em regime estacionário (ASSR, 40 Hz) | `completed_ASSR` |
+
+**Os dados não estão incluídos neste repositório.** Baixe o dataset no OpenNeuro e ajuste `DATASET_DIR` em `config.py`.
+
+Amostra de referência (repouso): 103 sujeitos, sendo 40 TD e 63 ASD (classes desbalanceadas).
+
+---
+
+## Estrutura do repositório
+
+| Arquivo | Função |
+|---|---|
+| `config.py` | Caminhos, bandas, parâmetros de épocas, ICA, SMOTE e sementes |
+| `01_extracao.py` | Pré-processamento (incluindo **ICA**) e extração de features por época |
+| `02_treinamento_ml.py` | ML clássico (SVM, ensemble) em nível de sujeito, com métricas e correlação com o target |
+| `03_treinamento_dl.py` | BrainNetCNN híbrida (tensor topológico 3D + vetor espectral), `GroupKFold` por sujeito |
+| `04_graficos.py` | Matrizes de confusão (valores fixos no código; atualizar após novas execuções) |
+| `05_fusao_multi_paradigma.py` | Especialistas por paradigma (espectral, grafos, espaço tangente riemanniano) e fusão multi-paradigma |
+| `06_diagnostico_ica.py` | Diagnóstico do efeito do ICA (AUC antes/depois, sujeitos perdidos, features frontais) |
+| `metricas.py` | Precisão, recall, F1, acurácia e análise de correlação feature × diagnóstico |
+| `balanceamento.py` | SMOTE próprio (NumPy), aplicado somente no treino de cada fold |
+
+---
+
+## Visão geral do pipeline
+
+```
+BDF bruto
+   │
+   ├─ seleção de canais EEG → reamostragem 256 Hz → filtro 0.5–45 Hz → referência média
+   ├─ ICA (ajuste em 1–40 Hz) → remoção de componentes oculares (proxy Fp1/Fp2)
+   ├─ seleção de 19 canais (10-20) → referência média
+   │
+   ▼
+Épocas de 2 s (50% de sobreposição) × 4 bandas (delta, theta, alpha, beta)
+   │   conectividade (correlação, 171 pares) + PSD (19 canais) por banda
+   ▼
+X_features.npy / y_labels.npy / metadata.csv
+   │
+   ├─ 02: assinatura por sujeito (mediana + IQR) → SVM / ensemble
+   ├─ 03: chunks por sujeito → tensor 19×19×4 + espectral → BrainNetCNN
+   └─ 05: especialistas por paradigma + espaço tangente riemanniano → fusão
 ```
 
 ---
 
-## 5. Como Rodar os Testes em Outra Máquina (Passo a Passo)
+## Instalação
 
-Qualquer integrante do grupo ou avaliador pode reproduzir todos os experimentos seguindo os passos abaixo:
+Requer **Python 3.10+**.
 
-### Passo 1: Clonar o Repositório e Criar o Ambiente Virtual (`venv`)
-Certifique-se de possuir o **Python 3.10 ou 3.11** instalado. No terminal (PowerShell ou CMD), execute:
-
-```powershell
-git clone <URL_DO_REPOSITORIO>
-cd TCC_EEG
-
-# Criar ambiente virtual
-python -m venv venv
-
-# Ativar o ambiente virtual (Windows)
-.\venv\Scripts\activate
-# (No Linux/macOS use: source venv/bin/activate)
+```bash
+git clone <URL-DO-REPOSITORIO>
+cd <NOME-DO-REPOSITORIO>
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Passo 2: Instalar as Dependências
-Com o ambiente virtual `(venv)` ativo, instale os pacotes científicos necessários:
+---
 
-```powershell
-pip install --upgrade pip
-pip install numpy pandas scipy scikit-learn mne tensorflow matplotlib seaborn
+## Como executar
+
+1. Baixe o dataset `ds006780` e ajuste `DATASET_DIR` em `config.py`.
+2. Execute os scripts **na ordem**, na mesma pasta:
+
+```bash
+python 01_extracao.py              # gera X_features.npy, y_labels.npy, metadata.csv
+python 02_treinamento_ml.py        # ML clássico + métricas + correlação
+python 03_treinamento_dl.py        # BrainNetCNN
+python 05_fusao_multi_paradigma.py # especialistas + fusão (gera cache_multi_paradigma.npz)
+python 06_diagnostico_ica.py       # opcional: diagnóstico do ICA
+python 04_graficos.py              # matrizes de confusão (atualize os valores antes)
 ```
 
-### Passo 3: Preparar os Dados (Duas Opções)
+**Importante sobre caches:** o `01_extracao.py` reaproveita `X_features.npy`, `y_labels.npy` e `metadata.csv` se já existirem, e o `05` reaproveita `cache_multi_paradigma.npz`. **Ao mudar o pré-processamento (por exemplo ligar/desligar o ICA), apague esses arquivos** antes de rodar novamente.
 
-Como os arquivos brutos de EEG (`.bdf` e `.vhdr`) e as matrizes de cache (`.npy` / `.npz`) são grandes, eles estão listados no `.gitignore`. Escolha **uma** das duas opções:
+Para comparar com e sem ICA, renomeie os arquivos antigos para `X_features_sem_ica.npy`, `y_labels_sem_ica.npy` e `metadata_sem_ica.csv` antes de reextrair; o `06_diagnostico_ica.py` usa esses nomes.
 
-* **Opção A — Rápida (Recomendada para o Grupo):**
-  Copie o arquivo compacto pré-extraído `cache_7_paradigmas_5_bandas.npz` (~37 MB, para rodar toda a Fase 5 com os 7 exames) e/ou `X_features.npy`, `y_labels.npy`, `metadata.csv` (para rodar as Fases 1 a 4) diretamente para a pasta raiz `TCC_EEG/`. Com isso, **não é necessário** baixar os 75 GB de arquivos brutos do OpenNeuro!
+---
 
-* **Opção B — Extração Completa do Zero (A partir da Base Bruta OpenNeuro):**
-  1. Baixe o dataset **ds006780** no OpenNeuro (`https://openneuro.org/datasets/ds006780`).
-  2. No arquivo `config.py`, altere a variável `DATASET_DIR` (linha 10) para a pasta onde o dataset foi salvo:
-     ```python
-     DATASET_DIR = r'D:\caminho\para\ds006780-download'
-     ```
-  3. Execute o extrator paralelo dos 7 paradigmas em 5 bandas (~12 minutos em 6 núcleos):
-     ```powershell
-     python 06_extracao_7_paradigmas_5_bandas.py
-     ```
-     *(Opcional: caso deseje regerar também a matriz bruta `X_features.npy` das Fases 1 a 3, execute `python 01_extracao.py`)*
+## Configuração
 
-### Passo 4: Executar os Modelos, Ablações e Gerar os Gráficos
+Principais parâmetros em `config.py`:
 
-1. **Rodar a Fase 5 Completa (7 Exames + Ablação de Bandas e Lobos + Poda de Interferência — 83,50%):**
-   ```powershell
-   python 07_estudo_diferencial_ablacao.py
-   ```
-2. **Rodar a Fase 4 (Especialistas nos 3 Primeiros Exames + Geometria Riemanniana):**
-   ```powershell
-   python 05_fusao_multi_paradigma.py
-   ```
-3. **Rodar a Fase 3.2 (Deep Learning Topológico 3D — `BrainNet-CNN` + Youden):**
-   ```powershell
-   python 03_treinamento_dl.py
-   ```
-4. **Rodar a Fase 1 (Machine Learning Clássico — SVM RBF e Ensemble Precoce):**
-   ```powershell
-   python 02_treinamento_ml.py
-   ```
-5. **Regerar todas as Matrizes de Confusão (`.png`):**
-   ```powershell
-   python 04_graficos.py
-   ```
-6. **Rodar a Fase 6 (Validação Auditada sem Canais Oculares `Fp1, Fp2, F7, F8` + Empilhamento Aninhado em 10 Sorteios):**
-   ```powershell
-   python 08_validacao_auditoria_blindada.py
-   ```
+| Parâmetro | Padrão | Descrição |
+|---|---|---|
+| `DATASET_DIR` | `D:\dataset_tcc\ds006780-download` | Pasta do dataset BIDS |
+| `EPOCH_DURATION` / `EPOCH_OVERLAP` | 2.0 / 1.0 s | Janelas de extração |
+| `SFREQ_RESAMPLE` | 256 | Frequência de reamostragem (Hz) |
+| `USAR_SISTEMA_10_20` | `True` | Usa 19 canais do sistema 10-20 |
+| `USAR_ICA` | `True` | Remove artefatos oculares com ICA |
+| `ICA_N_COMPONENTS` | 0.99 | Variância explicada (ou nº fixo de componentes) |
+| `ICA_METHOD` | `fastica` | `fastica`, `infomax` ou `picard` |
+| `ICA_EOG_CANAIS` | `['Fp1','Fp2']` | Canais de referência para detectar piscadas |
+| `ICA_EOG_THRESHOLD` | 3.0 | Limiar z-score do MNE (menor = mais agressivo) |
+| `ICA_MAX_EXCLUIR` | 3 | Máximo de componentes removidos por arquivo |
+| `USAR_SMOTE` | `True` | Balanceamento com dados sintéticos (só no treino) |
+| `SMOTE_K` | 5 | Vizinhos do SMOTE |
+| `RANDOM_STATE` | 42 | Semente global |
+
+---
+
+## Metodologia
+
+**Pré-processamento.** Reamostragem para 256 Hz, filtro passa-banda 0.5–45 Hz e referência média. O **ICA** é ajustado numa cópia filtrada em 1–40 Hz usando todos os canais EEG; componentes correlacionados com Fp1/Fp2 (proxy de EOG) são removidos do sinal original, e só então os 19 canais do sistema 10-20 são selecionados.
+
+**Features por época.** Para cada uma das 4 bandas (delta 0.5–4, theta 4–8, alpha 8–13, beta 13–30 Hz): correlação entre canais (171 pares) e potência espectral (PSD de Welch) por canal.
+
+**Assinatura por sujeito (`02`).** Conectividade com transformação de Fisher (arctanh), PSD relativo e quatro razões espectrais (theta/beta, theta/alpha, alpha/beta, delta/theta). Épocas ruidosas são descartadas por IQR da energia; cada sujeito é resumido por **mediana + IQR** (1.672 features no repouso; 8.360 no multi-paradigma, combinando `rest`, `fast`, `fast−rest`, `assr` e `assr−rest`).
+
+**Modelos.**
+- `02`: SVM RBF (repouso) e ensemble soft voting SVM + ExtraTrees + Regressão Logística (multi-paradigma), com `RobustScaler` e `SelectKBest` dentro do pipeline.
+- `03`: BrainNetCNN híbrida (convoluções 1×N e N×1 sobre o tensor 19×19×4 de conectividade/PSD + ramo denso espectral). Cada sujeito é dividido em 6 *chunks*; as probabilidades são agregadas por sujeito.
+- `05`: especialistas por paradigma (espectral, grafos, espaço tangente riemanniano de matrizes SPD; LogReg, SVM, MLP) combinados por média ponderada.
+
+**Validação.** `StratifiedKFold` por sujeito no `02` e `GroupKFold` por sujeito no `03` e `05`, evitando que dados do mesmo participante apareçam em treino e teste.
+
+**Balanceamento.** Além do `class_weight='balanced'`, é aplicado SMOTE (interpolação entre vizinhos da classe minoritária) **apenas no conjunto de treino de cada fold**. Teste e métricas usam somente dados reais.
+
+**Métricas.** Acurácia, acurácia balanceada, precisão, recall (sensibilidade), especificidade, F1 e AUC. Também é calculada a correlação de Pearson de cada feature com o diagnóstico, listando as features com |r| ≥ 0,7 (análise exploratória; não usada para selecionar features).
+
+---
+
+## Resultados
+
+Resultados **preliminares**, de duas execuções do pipeline. Não são comparáveis diretamente (veja a nota abaixo da tabela).
+
+| Execução | Sujeitos (REST) | AUC fusão | Acurácia fusão | Acurácia balanceada fusão |
+|---|---|---|---|---|
+| Sem ICA | 103 (40 TD / 63 ASD) | 0,820 – 0,823 | 79,6% – 82,5% | 79,8% – 80,6% |
+| Com ICA + SMOTE | 93 (38 TD / 55 ASD) | 0,695 | 67,7% – 68,8% | 68,4% – 69,1% |
+
+Especialistas isolados (acurácia bruta): REST 77,7% → 66,7%; FAST 75,0% → 62,5%; ASSR 67,7% → 52,3% (sem ICA → com ICA).
+
+> **Nota:** entre as duas execuções, o número de sujeitos caiu de 103 para 93 (o pré-processamento com ICA falhou para alguns arquivos) e, além do ICA, foram introduzidos o SMOTE e novas métricas. A queda de desempenho, portanto, **não pode ser atribuída apenas ao ICA**. O `06_diagnostico_ica.py` compara as AUCs nos mesmos sujeitos para isolar o efeito do ICA. Uma hipótese em investigação é que artefatos oculares carregavam informação correlacionada ao grupo, inflando os resultados sem ICA.
+
+*(Atualize esta seção com os resultados finais após recuperar os sujeitos perdidos e repetir a comparação nos mesmos sujeitos.)*
+
+---
+
+## Limitações conhecidas
+
+- **Amostra pequena** (≈100 sujeitos): intervalos de confiança largos (≈ ±9 pontos na acurácia) e alta variabilidade entre partições. Para referência, prever sempre ASD já acerta ≈ 59–61%.
+- **Otimismo nas estimativas:** nos scripts `03` e `05`, o limiar de decisão (índice de Youden) e os pesos da fusão são escolhidos sobre as mesmas previsões usadas na avaliação; no `03`, o *early stopping* usa o fold de teste como validação; e os "campeões" são selecionados entre vários candidatos. Para estimativas não enviesadas, use validação aninhada.
+- **Pesos e textos fixos no `05` e valores fixos no `04`:** pesos da fusão, descrições ("RECORDE ...") e números das matrizes de confusão estão escritos no código e precisam ser atualizados após cada nova execução.
+- **ICA com proxy de EOG:** sem canais oculares dedicados, o uso de Fp1/Fp2 pode remover parte da atividade cerebral frontal. Ajuste `ICA_EOG_CANAIS`, `ICA_EOG_THRESHOLD` e `ICA_MAX_EXCLUIR` conforme o dataset.
+- **Confundidores:** idade, sexo, QI e qualidade do registro podem se correlacionar com o diagnóstico e não são controlados.
+- **Sem validação externa:** nenhum teste em dataset independente.
+
+---
+
+## Reprodutibilidade
+
+- Semente global `RANDOM_STATE = 42` (NumPy, TensorFlow, scikit-learn, ICA e SMOTE).
+- A reprodutibilidade exata do ICA e do TensorFlow pode variar entre versões de bibliotecas e hardware.
+- Registre as versões usadas (`pip freeze > requirements-lock.txt`).
+
+---
+
+## Licença e citação
+
+- **Licença:** *(defina, por exemplo MIT)*.
+- **Dataset:** respeite os termos de uso e cite o dataset `ds006780` (OpenNeuro / SFARI) conforme as instruções da página do dataset.
+- **Autoria:** *(nome, instituição, orientador e ano)*.
+
+```bibtex
+@misc{tcc_eeg_tea,
+  author = {<Autor>},
+  title  = {Classificação de TEA com EEG: ML clássico, BrainNetCNN, geometria riemanniana e teoria de grafos},
+  year   = {<ano>},
+  note   = {Trabalho de Conclusão de Curso, <instituição>}
+}
+```

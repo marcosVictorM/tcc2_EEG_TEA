@@ -15,6 +15,9 @@ from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 import config
+from balanceamento import aplicar_smote_no_pipeline
+from metricas import (relatorio_metricas, analisar_correlacao_target,
+                      nomes_features_assinatura, nomes_features_multi)
 
 def extrair_assinatura_limpa(X_bloco):
     """Extrai Conectividade Z + PSD Relativo + Razões Espectrais de um paradigma para 1 sujeito"""
@@ -56,7 +59,10 @@ def extrair_assinatura_limpa(X_bloco):
     iqr_suj = np.percentile(epocas_limpas, 75, axis=0) - np.percentile(epocas_limpas, 25, axis=0)
     return np.concatenate([mediana_suj, iqr_suj])
 
-def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo):
+def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo, nomes_features=None, prefixo_corr='correlacao'):
+    if config.USAR_SMOTE:
+        pipe = aplicar_smote_no_pipeline(pipe)  # SMOTE só no .fit() de cada fold
+    n_sint = []
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=config.RANDOM_STATE)
     y_true_all, y_pred_all = [], []
 
@@ -65,6 +71,7 @@ def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo):
         X_te, y_te = X_mat[test_idx], y_vec[test_idx]
 
         pipe.fit(X_tr, y_tr)
+        n_sint.append(getattr(pipe.steps[-1][1], 'n_sinteticos_', 0))
         prob_tr = pipe.predict_proba(X_tr)[:, 1]
         
         melhor_th = 0.50
@@ -90,6 +97,8 @@ def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo):
     spec = tn / (tn + fp)
     sens = tp / (tp + fn)
 
+    if config.USAR_SMOTE:
+        print(f"[SMOTE] Amostras sintéticas geradas por fold (só no treino): {n_sint}")
     print("=======================================================")
     print(f"{nome_modelo}")
     print("=======================================================")
@@ -98,6 +107,14 @@ def avaliar_pipeline_calibrado(X_mat, y_vec, pipe, nome_modelo):
     print(f"Acerto em Neurotípicos (TD):  {tn}/{tn+fp} ({spec:.2%})")
     print(f"Acerto em Autismo      (ASD): {tp}/{tp+fn} ({sens:.2%})")
     print("=======================================================\n")
+
+    # Métricas extras: precisão, recall, F1 e score
+    relatorio_metricas(y_true_all, y_pred_all, nome_modelo)
+
+    # Correlação de cada feature com o target (|r| >= 0.7)
+    if nomes_features is not None:
+        analisar_correlacao_target(X_mat, y_vec, nomes_features, limiar=0.7, top_n=20,
+                                   prefixo=prefixo_corr, titulo=nome_modelo)
 
 def executar_consolidacao_fase1():
     print("Iniciando Consolidação Oficial da Fase 1 (Machine Learning Clássico - SFARI BIDS)...\n")
@@ -141,7 +158,8 @@ def executar_consolidacao_fase1():
 
     avaliar_pipeline_calibrado(
         X_rest_suj, y_rest_suj, pipe_svm_rest,
-        "MODELO CAMPEÃO EM EQUILÍBRIO CLÍNICO: SVM RBF (Repouso Isolado - 1.672 feats)"
+        "MODELO CAMPEÃO EM EQUILÍBRIO CLÍNICO: SVM RBF (Repouso Isolado - 1.672 feats)",
+        nomes_features=nomes_features_assinatura(), prefixo_corr='corr_rest'
     )
 
     # 2. Matriz Multi-Paradigma (103 pacientes x 8360 biomarcadores)
@@ -186,7 +204,8 @@ def executar_consolidacao_fase1():
 
         avaliar_pipeline_calibrado(
             X_multi_suj, y_rest_suj, pipe_ensemble_multi,
-            "MODELO CAMPEÃO EM SENSIBILIDADE / TRIAGEM: Ensemble Híbrido Multi-Paradigma (8.360 feats)"
+            "MODELO CAMPEÃO EM SENSIBILIDADE / TRIAGEM: Ensemble Híbrido Multi-Paradigma (8.360 feats)",
+            nomes_features=nomes_features_multi(), prefixo_corr='corr_multi'
         )
 
 if __name__ == '__main__':

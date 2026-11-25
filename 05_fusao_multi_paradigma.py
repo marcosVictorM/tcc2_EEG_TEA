@@ -15,6 +15,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix, roc_auc_score, roc_curve
 import config
+from metricas import relatorio_metricas
+from balanceamento import envolver_smote
 
 CACHE_MULTI_PATH = os.path.join(config.BASE_DIR, 'cache_multi_paradigma.npz')
 
@@ -294,7 +296,7 @@ def executar_estudo_multi_paradigma():
             X_tr_sel = sel.fit_transform(X_tr_s, y_tr)
             X_te_sel = sel.transform(X_te_s)
 
-            clf = clf_fn(fold_idx)
+            clf = envolver_smote(clf_fn(fold_idx), seed=42 + fold_idx)  # SMOTE só no fit do treino
             clf.fit(X_tr_sel, y_tr)
             probs_te = clf.predict_proba(X_te_sel)[:, 1]
 
@@ -316,9 +318,9 @@ def executar_estudo_multi_paradigma():
     oof_dfast_spec_mlp60 = avaliar_ml('delta_fast', 'spec', lambda f: MLPClassifier(hidden_layer_sizes=(32, 16), alpha=1.0, max_iter=300, random_state=42+f), k_best=60, por_chunk=True)
 
     print("1. DESEMPENHO DO MELHOR ESPECIALISTA EM CADA PARADIGMA ISOLADO (5-Fold Subject GroupKFold):")
-    print("-" * 98)
-    print(f"{'Paradigma / Dominio':<30} | {'Algoritmo Campeao do Exame':<26} | {'Acc Bruta':<10} | {'Acc Bal':<9} | {'TD (Esp)':<9} | {'ASD (Sen)':<9}")
-    print("-" * 98)
+    print("-" * 124)
+    print(f"{'Paradigma / Dominio':<30} | {'Algoritmo Campeao do Exame':<26} | {'Acc Bruta':<10} | {'Acc Bal':<9} | {'TD (Esp)':<9} | {'ASD (Sen)':<9} | {'Prec ASD':<9} | {'F1 ASD':<9}")
+    print("-" * 124)
 
     lista_relatorio = [
         ("REST (Espectral Relativo)", "LogReg L2 Calibrada (k=40)", oof_rest_lr40),
@@ -334,9 +336,11 @@ def executar_estudo_multi_paradigma():
 
     for dom, alg, p_oof in lista_relatorio:
         m = ~np.isnan(p_oof)
-        acc, bal, sp, se, _, _ = otimizar_youden(y_103[m], p_oof[m])
-        print(f"{dom:<30} | {alg:<26} | {acc:9.2%} | {bal:8.2%} | {sp:8.2%} | {se:8.2%}")
-    print("-" * 98)
+        acc, bal, sp, se, _, (tn_, fp_, fn_, tp_) = otimizar_youden(y_103[m], p_oof[m])
+        prec = tp_ / (tp_ + fp_) if (tp_ + fp_) > 0 else 0.0
+        f1_ = 2 * prec * se / (prec + se) if (prec + se) > 0 else 0.0
+        print(f"{dom:<30} | {alg:<26} | {acc:9.2%} | {bal:8.2%} | {sp:8.2%} | {se:8.2%} | {prec:8.2%} | {f1_:8.2%}")
+    print("-" * 124)
 
     def norm_z(p):
         res = p.copy()
@@ -392,6 +396,8 @@ def executar_estudo_multi_paradigma():
     print(f"Acerto em Neurotipicos (TD):     {tn_r}/{tn_r+fp_r} ({sp_r:.2%})")
     print(f"Acerto em Autismo      (ASD):    {tp_r}/{tp_r+fn_r} ({se_r:.2%})")
     print("===============================================================================================\n")
+    relatorio_metricas(y_103, (prob_rec >= th_r).astype(int), "Modelo Campeão 1 (Super-Fusão)")
+
 
     print("===============================================================================================")
     print("MODELO CAMPEAO 2: SUPER-FUSAO CLINICA BALANCEADA (RECORDE DE EQUILIBRIO: 80.60% BAL.)")
@@ -405,6 +411,8 @@ def executar_estudo_multi_paradigma():
     print(f"Acerto em Neurotipicos (TD):     {tn_b}/{tn_b+fp_b} ({sp_b:.2%})")
     print(f"Acerto em Autismo      (ASD):    {tp_b}/{tp_b+fn_b} ({se_b:.2%})")
     print("===============================================================================================\n")
+    relatorio_metricas(y_103, (prob_bal >= th_b).astype(int), "Modelo Campeão 2 (Clínica Balanceada)")
+
 
 if __name__ == '__main__':
     executar_estudo_multi_paradigma()

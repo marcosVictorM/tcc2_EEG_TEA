@@ -65,14 +65,4 @@ if __name__ == '__main__':
         cmap='Purples'
     )
 
-    # 4. Fase 5 (Recorde Absoluto): Super-Fusao 7 Exames Pos-Ablacao (83.50% Bruta | 82.86% Bal.)
-    cm_f5 = np.array([[32, 8],
-                      [9, 54]])
-    plotar_matriz_confusao(
-        cm_f5,
-        'Fase 5 (Pos-Ablacao de Ruido): 83.50% Bruta (86/103) | 82.86% Bal.',
-        'matriz_confusao_fase5_super_fusao_83_5.png',
-        cmap='YlGnBu'
-    )
-
-    print("Graficos das Fases 3.2, 4 e 5 gerados com sucesso!")
+    print("Graficos da Fase 3.2 e Fase 4 gerados com sucesso!")

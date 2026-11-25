@@ -11,6 +11,8 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 import config
+from balanceamento import balancear_treino_dl
+from metricas import relatorio_metricas
 
 import tensorflow as tf
 from tensorflow.keras import layers, models, regularizers, callbacks
@@ -185,6 +187,14 @@ def executar_treinamento_dl():
         spec_tr_sel = selector.fit_transform(spec_tr_sc, y_tr)
         spec_te_sel = selector.transform(spec_te_sc)
 
+        # Dados sintéticos (SMOTE) SOMENTE no treino; teste/validação continuam 100% reais
+        pesos_fold = pesos_classe
+        if config.USAR_SMOTE:
+            topo_tr, spec_tr_sel, y_tr, n_sint = balancear_treino_dl(
+                topo_tr, spec_tr_sel, y_tr, seed=config.RANDOM_STATE + fold)
+            pesos_fold = None  # já balanceado; evita compensar duas vezes
+            print(f"Fold {fold+1}: +{n_sint} amostras sintéticas (treino: {np.sum(y_tr==0)} TD / {np.sum(y_tr==1)} ASD)")
+
         model = criar_rede_convolucional_hibrida(n_canais, k_feats)
         early_stop = callbacks.EarlyStopping(
             monitor='val_loss', patience=15, restore_best_weights=True, verbose=0
@@ -195,7 +205,7 @@ def executar_treinamento_dl():
             validation_data=([topo_te, spec_te_sel], y_te),
             epochs=100,
             batch_size=16,
-            class_weight=pesos_classe,
+            class_weight=pesos_fold,
             callbacks=[early_stop],
             verbose=0
         )
@@ -259,6 +269,8 @@ def executar_treinamento_dl():
     print(f"Acerto em Neurotípicos (TD):  {tn}/{tn+fp} ({spec:.2%})")
     print(f"Acerto em Autismo      (ASD): {tp}/{tp+fn} ({sens:.2%})")
     print("=======================================================\n")
+
+    relatorio_metricas(y_true_all, y_pred_all, "BrainNet-CNN (REST)")
 
 if __name__ == '__main__':
     executar_treinamento_dl()
